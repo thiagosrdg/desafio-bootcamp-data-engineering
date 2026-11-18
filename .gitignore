@@ -1,0 +1,23 @@
+# segredos
+.env
+
+# dados extraídos (regenerados pelo ETL)
+brutos/*
+!brutos/.gitkeep
+
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+
+# Claude Code (pessoal)
+.claude/settings.local.json
+CLAUDE.local.md
+
+# sistema
+.DS_Store
+
+# documentação local
+docs/
