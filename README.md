@@ -24,7 +24,7 @@ python3 -m venv .venv && source .venv/bin/activate && pip install -r requirement
 cp .env.example .env              # e troque a senha
 
 # 2. API local (em outro terminal)
-python insumos/api_verdejar.py
+python insumos/api_verdejar.py --dados insumos/dados
 curl http://127.0.0.1:8000/saude
 
 # 3. PostgreSQL + esquema
