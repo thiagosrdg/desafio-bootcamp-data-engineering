@@ -17,6 +17,7 @@ from etl.extracao import (
     buscar_pagina,
     executar_extracao,
     extrair_rota,
+    ler_bruto,
     ler_produtos_csv,
     salvar_bruto,
 )
@@ -284,34 +285,117 @@ def test_falha_em_pedidos_nao_grava_nenhum_bruto(monkeypatch, tmp_path):
     assert not brutos.exists()  # clientes foi extraído, mas nada foi gravado
 
 
+# --- leitura dos brutos (entrada da transformação, Parte 2) ---
+
+
+def test_ler_bruto_devolve_os_registros_gravados(tmp_path):
+    registros = [{"id": 1, "valor_total": "125,84"}, {"id": 2, "email": None}]
+    salvar_bruto(registros, "pedidos", tmp_path)
+
+    assert ler_bruto("pedidos", tmp_path) == [
+        {"id": 1, "valor_total": "125,84"},
+        {"id": 2, "email": None},
+    ]
+
+
+def test_ler_bruto_ausente_vira_erro(tmp_path):
+    with pytest.raises(ErroExtracao, match="bruto nao encontrado: .*clientes.json"):
+        ler_bruto("clientes", tmp_path)
+
+
+@pytest.mark.parametrize(
+    ("conteudo", "mensagem"),
+    [
+        ('{"id": 1}', "deveria conter uma lista de registros"),
+        ('[{"id": 1}', "nao foi possivel ler"),  # JSON cortado no meio
+    ],
+)
+def test_ler_bruto_fora_do_formato_vira_erro(tmp_path, conteudo, mensagem):
+    (tmp_path / "pedidos.json").write_text(conteudo, encoding="utf-8")
+
+    with pytest.raises(ErroExtracao, match=mensagem):
+        ler_bruto("pedidos", tmp_path)
+
+
 # --- saída do ETL (formato da seção 4) ---
 
+BRUTOS_MAIN = {
+    "clientes": [
+        {
+            "id": 1,
+            "nome": "Ana Lima",
+            "email": None,
+            "cidade": "Porto Alegre",
+            "estado": "rs",
+            "cadastro_em": "2024-01-10",
+        }
+    ],
+    "pedidos": [
+        {
+            "id": 10,
+            "cliente_id": 1,
+            "data_pedido": "05/03/2026",
+            "status": "entregue",
+            "valor_total": "13,00",
+            "itens": [{"produto_id": 1, "quantidade": 2, "preco_unitario": 5.0}],
+        },
+    ]
+    * 2,  # o mesmo pedido duas vezes (A5)
+    "produtos": [
+        {"produto_id": "1", "nome": "Alface crespa", "categoria": "folhas", "preco_base": "3.5"}
+    ],
+}
 
-def test_main_imprime_contadores_no_formato_da_secao_4(monkeypatch, capsys):
+
+def instalar_etl_falso(monkeypatch: pytest.MonkeyPatch, brutos: dict) -> dict:
+    """Troca a extração (rede e disco) por contadores fixos e a leitura dos brutos pelo dict."""
     monkeypatch.setattr(main, "load_dotenv", lambda: None)  # não lê o .env durante o teste
-    monkeypatch.setenv("API_URL", "http://api.falsa/")
     recebido = {}
 
     def extracao_falsa(url_base):
         recebido["url_base"] = url_base
         return {
-            "clientes_paginas": 20,
-            "clientes_registros": 1000,
-            "pedidos_paginas": 102,
-            "pedidos_registros_brutos": 5100,
-            "produtos_registros": 12,
+            "clientes_paginas": 1,
+            "clientes_registros": 1,
+            "pedidos_paginas": 1,
+            "pedidos_registros_brutos": 2,
+            "produtos_registros": 1,
         }
 
     monkeypatch.setattr(main, "executar_extracao", extracao_falsa)
+    monkeypatch.setattr(main, "ler_bruto", lambda nome: brutos[nome])
+    return recebido
+
+
+def test_main_imprime_contadores_no_formato_da_secao_4(monkeypatch, capsys):
+    monkeypatch.setenv("API_URL", "http://api.falsa/")
+    recebido = instalar_etl_falso(monkeypatch, BRUTOS_MAIN)
 
     assert main.main() == 0
     assert recebido["url_base"] == "http://api.falsa"  # a barra final foi removida
+    # Conta à mão: 1 pedido único (o 10) e 1 repetido; e-mail nulo, "rs", data DD/MM/AAAA e
+    # valor com vírgula, 1 de cada; total 13.00 contra itens 2 x 5.00 = 10.00, divergente.
     assert capsys.readouterr().out.splitlines() == [
-        "extracao: clientes paginas=20 registros=1000",
-        "extracao: pedidos paginas=102 registros_brutos=5100",
-        "extracao: produtos registros=12",
+        "extracao: clientes paginas=1 registros=1",
+        "extracao: pedidos paginas=1 registros_brutos=2",
+        "extracao: produtos registros=1",
         "extracao: brutos salvos em brutos/ (clientes.json, pedidos.json, produtos.json)",
+        "transformacao: pedidos_unicos=1 repetidos_descartados=1",
+        "transformacao: emails_nulos=1 estados_padronizados=1 datas_convertidas=1 "
+        "valores_convertidos=1",
+        "divergentes: 1 pedidos com valor_total diferente da soma dos itens",
     ]
+
+
+def test_main_com_registro_invalido_sai_com_mensagem_e_codigo_1(monkeypatch, capsys):
+    monkeypatch.setenv("API_URL", URL)
+    pedido_ruim = dict(BRUTOS_MAIN["pedidos"][0], data_pedido="2026/03/05")
+    instalar_etl_falso(monkeypatch, dict(BRUTOS_MAIN, pedidos=[pedido_ruim]))
+
+    assert main.main() == 1
+    saida = capsys.readouterr()
+    assert "transformacao:" not in saida.out  # nenhum contador parcial é impresso
+    assert saida.err.startswith("erro: transformacao: pedido id=10: data fora dos formatos")
 
 
 def test_main_sem_api_sai_com_mensagem_e_codigo_1(monkeypatch, capsys):

@@ -3,7 +3,7 @@
 Orquestra extração, transformação, carga e reconciliação, e imprime a saída em texto simples
 (uma informação por linha, sem cores), no formato da seção 4 do enunciado.
 
-Por enquanto (Parte 1), só a extração está ligada.
+Por enquanto (Parte 2), estão ligadas a extração e a transformação.
 """
 
 import os
@@ -11,22 +11,13 @@ import sys
 
 from dotenv import load_dotenv
 
-from etl.extracao import ErroExtracao, executar_extracao
+from etl.extracao import ErroExtracao, executar_extracao, ler_bruto
+from etl.transformacao import ErroTransformacao, transformar
 
 API_URL_PADRAO = "http://127.0.0.1:8000"
 
 
-def main() -> int:
-    """Roda o ETL e devolve o código de saída do processo (0 = sucesso, 1 = erro tratado)."""
-    load_dotenv()
-    url_base = os.environ.get("API_URL", API_URL_PADRAO).rstrip("/")
-
-    try:
-        contadores = executar_extracao(url_base)
-    except ErroExtracao as erro:
-        print(f"erro: extracao: {erro}", file=sys.stderr)
-        return 1
-
+def imprimir_extracao(contadores: dict[str, int]) -> None:
     print(
         f"extracao: clientes paginas={contadores['clientes_paginas']} "
         f"registros={contadores['clientes_registros']}"
@@ -37,6 +28,48 @@ def main() -> int:
     )
     print(f"extracao: produtos registros={contadores['produtos_registros']}")
     print("extracao: brutos salvos em brutos/ (clientes.json, pedidos.json, produtos.json)")
+
+
+def imprimir_transformacao(contadores: dict[str, int]) -> None:
+    print(
+        f"transformacao: pedidos_unicos={contadores['pedidos_unicos']} "
+        f"repetidos_descartados={contadores['repetidos_descartados']}"
+    )
+    print(
+        f"transformacao: emails_nulos={contadores['emails_nulos']} "
+        f"estados_padronizados={contadores['estados_padronizados']} "
+        f"datas_convertidas={contadores['datas_convertidas']} "
+        f"valores_convertidos={contadores['valores_convertidos']}"
+    )
+
+
+def main() -> int:
+    """Roda o ETL e devolve o código de saída do processo (0 = sucesso, 1 = erro tratado)."""
+    load_dotenv()
+    url_base = os.environ.get("API_URL", API_URL_PADRAO).rstrip("/")
+
+    try:
+        contadores_extracao = executar_extracao(url_base)
+    except ErroExtracao as erro:
+        print(f"erro: extracao: {erro}", file=sys.stderr)
+        return 1
+    imprimir_extracao(contadores_extracao)
+
+    # A transformação lê o que ficou em brutos/, e não o que está em memória: assim ela trabalha
+    # exatamente sobre os arquivos que permitem reprocessar sem chamar a API de novo.
+    try:
+        brutos = {nome: ler_bruto(nome) for nome in ("clientes", "pedidos", "produtos")}
+        dados, contadores = transformar(brutos["clientes"], brutos["pedidos"], brutos["produtos"])
+    except (ErroExtracao, ErroTransformacao) as erro:
+        print(f"erro: transformacao: {erro}", file=sys.stderr)
+        return 1
+    imprimir_transformacao(contadores)
+
+    # Parte 3: a carga de `dados` e a reconciliação entram aqui, antes da linha dos divergentes.
+    print(
+        f"divergentes: {contadores['divergentes']} pedidos "
+        "com valor_total diferente da soma dos itens"
+    )
     return 0
 
 

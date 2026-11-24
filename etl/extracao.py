@@ -161,6 +161,24 @@ def salvar_bruto(registros: list[dict], nome: str, pasta: Path = PASTA_BRUTOS) -
     return caminho
 
 
+def ler_bruto(nome: str, pasta: Path = PASTA_BRUTOS) -> list[dict]:
+    """Lê <pasta>/<nome>.json, gravado por salvar_bruto, e devolve os registros como estão.
+
+    É a entrada da transformação: ela trabalha sobre o que ficou em brutos/, sem chamar a API.
+    """
+    caminho = pasta / f"{nome}.json"
+    try:
+        with caminho.open(encoding="utf-8") as arquivo:
+            registros = json.load(arquivo)
+    except FileNotFoundError:
+        raise ErroExtracao(f"bruto nao encontrado: {caminho}") from None
+    except (OSError, ValueError) as erro:  # ValueError cobre JSON inválido e texto fora de UTF-8
+        raise ErroExtracao(f"nao foi possivel ler {caminho}: {erro}") from None
+    if not isinstance(registros, list):
+        raise ErroExtracao(f"{caminho} deveria conter uma lista de registros")
+    return registros
+
+
 def executar_extracao(
     url_base: str,
     pasta_brutos: Path = PASTA_BRUTOS,
