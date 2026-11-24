@@ -1,7 +1,7 @@
 # Desafio Final: ETL da Verdejar. Regras para agentes de IA
 
 ETL que leva clientes e pedidos de uma API local (paginada) e produtos de um CSV para um PostgreSQL,
-com seis armadilhas de qualidade (A1 a A6), testes, reconciliação e defesa oral.
+com seis armadilhas de qualidade (A1 a A6), testes e reconciliação.
 O contrato está em `CONTRATO_DE_DADOS.md`.
 
 ## Seu papel: Par com escopo limitado (regra do programa)
