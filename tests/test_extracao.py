@@ -11,6 +11,7 @@ import pytest
 import requests
 
 from etl import extracao, main
+from etl.carga import ErroCarga
 from etl.extracao import (
     ErroExtracao,
     PaginaInexistente,
@@ -348,9 +349,16 @@ BRUTOS_MAIN = {
 
 
 def instalar_etl_falso(monkeypatch: pytest.MonkeyPatch, brutos: dict) -> dict:
-    """Troca a extração (rede e disco) por contadores fixos e a leitura dos brutos pelo dict."""
+    """Troca a extração (rede e disco) por contadores fixos, a leitura dos brutos pelo dict e a
+    carga (banco) por uma que só guarda o que recebeu: nenhum teste do main grava no banco real."""
     monkeypatch.setattr(main, "load_dotenv", lambda: None)  # não lê o .env durante o teste
     recebido = {}
+
+    def carga_falsa(dados):
+        recebido["linhas_por_tabela"] = {tabela: len(linhas) for tabela, linhas in dados.items()}
+        return {"clientes": 1, "produtos": 1, "pedidos": 1, "itens_pedido": 1}
+
+    monkeypatch.setattr(main, "executar_carga", carga_falsa)
 
     def extracao_falsa(url_base):
         recebido["url_base"] = url_base
@@ -373,6 +381,13 @@ def test_main_imprime_contadores_no_formato_da_secao_4(monkeypatch, capsys):
 
     assert main.main() == 0
     assert recebido["url_base"] == "http://api.falsa"  # a barra final foi removida
+    # A carga recebe as linhas transformadas: o pedido repetido já saiu (A5).
+    assert recebido["linhas_por_tabela"] == {
+        "produtos": 1,
+        "clientes": 1,
+        "pedidos": 1,
+        "itens_pedido": 1,
+    }
     # Conta à mão: 1 pedido único (o 10) e 1 repetido; e-mail nulo, "rs", data DD/MM/AAAA e
     # valor com vírgula, 1 de cada; total 13.00 contra itens 2 x 5.00 = 10.00, divergente.
     assert capsys.readouterr().out.splitlines() == [
@@ -383,8 +398,25 @@ def test_main_imprime_contadores_no_formato_da_secao_4(monkeypatch, capsys):
         "transformacao: pedidos_unicos=1 repetidos_descartados=1",
         "transformacao: emails_nulos=1 estados_padronizados=1 datas_convertidas=1 "
         "valores_convertidos=1",
+        "carga: clientes=1 produtos=1 pedidos=1 itens=1",
         "divergentes: 1 pedidos com valor_total diferente da soma dos itens",
     ]
+
+
+def test_main_com_falha_na_carga_sai_com_mensagem_e_codigo_1(monkeypatch, capsys):
+    monkeypatch.setenv("API_URL", URL)
+    instalar_etl_falso(monkeypatch, BRUTOS_MAIN)
+
+    def carga_que_falha(dados):
+        raise ErroCarga("tabela pedidos: violacao de chave estrangeira")
+
+    monkeypatch.setattr(main, "executar_carga", carga_que_falha)
+
+    assert main.main() == 1
+    saida = capsys.readouterr()
+    assert "carga:" not in saida.out  # nenhuma contagem é impressa
+    assert "divergentes:" not in saida.out
+    assert saida.err == "erro: carga: tabela pedidos: violacao de chave estrangeira\n"
 
 
 def test_main_com_registro_invalido_sai_com_mensagem_e_codigo_1(monkeypatch, capsys):

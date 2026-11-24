@@ -38,9 +38,17 @@ python -m etl.main
 pytest -q
 ```
 
-## Biblioteca de conexão
+## Banco e biblioteca de conexão
 
-_Qual biblioteca foi usada, por quê e como instalar._
+- **Banco:** caminho B da errata v3, com o PostgreSQL 16 num contêiner Docker (`verdejar-pg`) na porta **5433**.
+  A 5432 desta máquina já é usada por outro PostgreSQL, nativo. O contêiner já criado sobe de novo com
+  `docker start verdejar-pg`.
+- **Biblioteca:** [psycopg 3](https://www.psycopg.org/psycopg3/), instalada pelo `requirements.txt` (`psycopg[binary]`,
+  que já traz a libpq, sem compilar nada). Ou, avulsa: `pip install "psycopg[binary]"`.
+- **Por que o psycopg 3:** é o driver de PostgreSQL mais usado em Python e é mantido ativamente. Ele converte sozinho
+  `Decimal`, `date`, `bool` e `None` para `NUMERIC`, `DATE`, `BOOLEAN` e `NULL`, e envia os parâmetros separados do texto do SQL.
+- **Credenciais:** vêm das variáveis `PGHOST`, `PGPORT`, `PGDATABASE`, `PGUSER` e `PGPASSWORD`, que o `python-dotenv` lê do `.env`
+  (fora do git). A carga exige as cinco. Sem a `PGPORT`, por exemplo, ela iria para a 5432, que é o banco errado.
 
 ## Como funciona
 
@@ -48,7 +56,50 @@ _Extração → brutos → transformação (A1–A6) → carga → reconciliaç�
 
 ## Estratégia de idempotência
 
-_Qual estratégia foi escolhida, por quê, e a saída de duas execuções seguidas com as mesmas contagens._
+**Estratégia: limpar e recarregar tudo, numa transação só** (`etl/carga.py`, função `carregar`).
+
+1. Abre uma transação.
+2. `TRUNCATE itens_pedido, pedidos, clientes, produtos`, as quatro tabelas num só comando (assim o PostgreSQL aceita sem `CASCADE`).
+3. Insere, nesta ordem, `produtos`, `clientes`, `pedidos` e `itens_pedido`: os pais antes dos filhos, por causa das
+   chaves estrangeiras. Os INSERTs usam parâmetros `%(campo)s` com `executemany`, nunca texto concatenado com dados.
+4. Faz o commit. Se qualquer passo falhar (por exemplo, um item com produto inexistente), a transação é desfeita, o banco
+   continua com a carga anterior e o ETL termina com `erro: carga: tabela <nome>: <motivo>`.
+
+**Por que essa estratégia:** a extração traz sempre a origem inteira, então o banco deve ser um espelho dela. Limpar e
+recarregar garante isso sem lógica extra. As alternativas eram piores aqui:
+
+- `INSERT ... ON CONFLICT DO NOTHING` não duplica, mas não atualiza um pedido que mudou na origem.
+- `ON CONFLICT DO UPDATE` atualiza, mas não remove o que sumiu da origem, como um item retirado de um pedido.
+
+Com 5000 pedidos, recarregar tudo leva poucos segundos. A transação também impede que alguém veja as tabelas vazias ou pela metade.
+
+**Prova:** a linha `carga:` mostra as contagens lidas do banco depois do commit (`SELECT COUNT(*)`), e não o que o ETL
+acha que gravou. Duas execuções seguidas de `python -m etl.main`, com saídas idênticas (`diff` sem diferenças):
+
+```text
+extracao: clientes paginas=20 registros=1000
+extracao: pedidos paginas=102 registros_brutos=5100
+extracao: produtos registros=12
+extracao: brutos salvos em brutos/ (clientes.json, pedidos.json, produtos.json)
+transformacao: pedidos_unicos=5000 repetidos_descartados=100
+transformacao: emails_nulos=81 estados_padronizados=151 datas_convertidas=1037 valores_convertidos=1255
+carga: clientes=1000 produtos=12 pedidos=5000 itens=12455
+divergentes: 238 pedidos com valor_total diferente da soma dos itens
+```
+
+```text
+extracao: clientes paginas=20 registros=1000
+extracao: pedidos paginas=102 registros_brutos=5100
+extracao: produtos registros=12
+extracao: brutos salvos em brutos/ (clientes.json, pedidos.json, produtos.json)
+transformacao: pedidos_unicos=5000 repetidos_descartados=100
+transformacao: emails_nulos=81 estados_padronizados=151 datas_convertidas=1037 valores_convertidos=1255
+carga: clientes=1000 produtos=12 pedidos=5000 itens=12455
+divergentes: 238 pedidos com valor_total diferente da soma dos itens
+```
+
+Os testes de `tests/test_carga.py` também cobrem isso: carregar duas vezes deixa as mesmas contagens, e uma carga com erro
+desfaz tudo e mantém a anterior. Eles rodam num esquema temporário (`teste_carga`), sem tocar nas tabelas do ETL.
 
 ## Resultados das consultas de validação
 

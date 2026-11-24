@@ -3,7 +3,7 @@
 Orquestra extração, transformação, carga e reconciliação, e imprime a saída em texto simples
 (uma informação por linha, sem cores), no formato da seção 4 do enunciado.
 
-Por enquanto (Parte 2), estão ligadas a extração e a transformação.
+Por enquanto (Parte 3), estão ligadas a extração, a transformação e a carga.
 """
 
 import os
@@ -11,6 +11,7 @@ import sys
 
 from dotenv import load_dotenv
 
+from etl.carga import ErroCarga, executar_carga
 from etl.extracao import ErroExtracao, executar_extracao, ler_bruto
 from etl.transformacao import ErroTransformacao, transformar
 
@@ -43,6 +44,13 @@ def imprimir_transformacao(contadores: dict[str, int]) -> None:
     )
 
 
+def imprimir_carga(contagens: dict[str, int]) -> None:
+    print(
+        f"carga: clientes={contagens['clientes']} produtos={contagens['produtos']} "
+        f"pedidos={contagens['pedidos']} itens={contagens['itens_pedido']}"
+    )
+
+
 def main() -> int:
     """Roda o ETL e devolve o código de saída do processo (0 = sucesso, 1 = erro tratado)."""
     load_dotenv()
@@ -65,7 +73,15 @@ def main() -> int:
         return 1
     imprimir_transformacao(contadores)
 
-    # Parte 3: a carga de `dados` e a reconciliação entram aqui, antes da linha dos divergentes.
+    # As credenciais do banco vêm das variáveis PG* do ambiente (o load_dotenv acima lê o .env).
+    try:
+        contagens = executar_carga(dados)
+    except ErroCarga as erro:
+        print(f"erro: carga: {erro}", file=sys.stderr)
+        return 1
+    imprimir_carga(contagens)
+
+    # Parte 4: a linha da reconciliação entra aqui, antes da linha dos divergentes.
     print(
         f"divergentes: {contadores['divergentes']} pedidos "
         "com valor_total diferente da soma dos itens"
