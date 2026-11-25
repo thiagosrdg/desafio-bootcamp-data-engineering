@@ -3,7 +3,7 @@
 Orquestra extração, transformação, carga e reconciliação, e imprime a saída em texto simples
 (uma informação por linha, sem cores), no formato da seção 4 do enunciado.
 
-Por enquanto (Parte 3), estão ligadas a extração, a transformação e a carga.
+Cada etapa que falha imprime "erro: <etapa>: <motivo>" na saída de erro e encerra com código 1.
 """
 
 import os
@@ -13,6 +13,7 @@ from dotenv import load_dotenv
 
 from etl.carga import ErroCarga, executar_carga
 from etl.extracao import ErroExtracao, executar_extracao, ler_bruto
+from etl.reconciliacao import ErroReconciliacao, executar_reconciliacao
 from etl.transformacao import ErroTransformacao, transformar
 
 API_URL_PADRAO = "http://127.0.0.1:8000"
@@ -51,6 +52,19 @@ def imprimir_carga(contagens: dict[str, int]) -> None:
     )
 
 
+def imprimir_reconciliacao(resultado: dict) -> None:
+    print(
+        f"reconciliacao: pedidos_origem={resultado['pedidos_origem']} "
+        f"pedidos_destino={resultado['pedidos_destino']} "
+        f"diferenca={resultado['diferenca_pedidos']}"
+    )
+    print(
+        f"reconciliacao: soma_valor_itens_origem={resultado['soma_valor_itens_origem']} "
+        f"soma_valor_itens_destino={resultado['soma_valor_itens_destino']} "
+        f"diferenca={resultado['diferenca_soma']}"
+    )
+
+
 def main() -> int:
     """Roda o ETL e devolve o código de saída do processo (0 = sucesso, 1 = erro tratado)."""
     load_dotenv()
@@ -81,7 +95,21 @@ def main() -> int:
         return 1
     imprimir_carga(contagens)
 
-    # Parte 4: a linha da reconciliação entra aqui, antes da linha dos divergentes.
+    # A origem são os brutos lidos acima (com os repetidos); o destino é lido de novo do banco.
+    try:
+        reconciliacao = executar_reconciliacao(brutos["pedidos"])
+    except (ErroCarga, ErroReconciliacao) as erro:
+        print(f"erro: reconciliacao: {erro}", file=sys.stderr)
+        return 1
+    imprimir_reconciliacao(reconciliacao)
+    if not reconciliacao["confere"]:
+        print(
+            "erro: reconciliacao: origem e destino nao conferem (a contagem de pedidos precisa "
+            "ser igual e a soma de valor_itens pode diferir no maximo 0.01)",
+            file=sys.stderr,
+        )
+        return 1
+
     print(
         f"divergentes: {contadores['divergentes']} pedidos "
         "com valor_total diferente da soma dos itens"

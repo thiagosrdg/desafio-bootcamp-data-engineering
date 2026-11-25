@@ -1,20 +1,17 @@
 """Testes da carga (Parte 3).
 
 Os dois primeiros não usam banco. Os demais rodam no PostgreSQL do .env, mas num esquema temporário
-(teste_carga), criado e apagado pelo próprio teste: as tabelas do ETL, no esquema public, não são
-tocadas. Sem banco disponível, esses testes são pulados e aparecem como "skipped" na saída do
-pytest. Os valores esperados estão escritos à mão.
+(teste_etl, da fixture conexao em tests/conftest.py), criado e apagado pelo próprio teste: as
+tabelas do ETL, no esquema public, não são tocadas. Sem banco disponível, esses testes são pulados
+e aparecem como "skipped" na saída do pytest. Os valores esperados estão escritos à mão.
 """
 
-import os
 from datetime import date
 from decimal import Decimal
 
 import pytest
-from dotenv import dotenv_values
 
-from etl.carga import ErroCarga, carregar, conectar, contar_linhas, parametros_conexao
-from etl.extracao import RAIZ
+from etl.carga import ErroCarga, carregar, contar_linhas, parametros_conexao
 
 AMBIENTE = {
     "PGHOST": "localhost",
@@ -49,30 +46,7 @@ def test_parametros_conexao_sem_variavel_vira_erro_que_nao_mostra_a_senha():
     assert "senha_de_teste" not in str(erro.value)
 
 
-# --- com banco, num esquema temporário ---
-
-
-@pytest.fixture
-def conexao():
-    """Conexão com search_path no esquema teste_carga, com as tabelas do schema.sql vazias."""
-    # O .env vai para um dicionário, e não para o os.environ: o load_dotenv deixaria as variáveis
-    # PG* valendo para os testes seguintes, e um teste do main gravaria dados falsos no banco real.
-    ambiente = {**dotenv_values(RAIZ / ".env"), **os.environ}  # o ambiente vence, como no main
-    try:
-        conexao = conectar(ambiente)
-    except ErroCarga as erro:
-        pytest.skip(f"PostgreSQL indisponivel: {erro}")
-    with conexao:
-        conexao.execute("DROP SCHEMA IF EXISTS teste_carga CASCADE")  # sobra de teste interrompido
-        conexao.execute("CREATE SCHEMA teste_carga")
-        conexao.execute("SET search_path TO teste_carga")
-        # Trava de segurança: o TRUNCATE da carga nunca pode cair nas tabelas reais (public).
-        assert conexao.execute("SELECT current_schema()").fetchone() == ("teste_carga",)
-        conexao.execute((RAIZ / "insumos" / "schema.sql").read_text(encoding="utf-8"))
-        try:
-            yield conexao
-        finally:
-            conexao.execute("DROP SCHEMA teste_carga CASCADE")
+# --- com banco, no esquema temporário (fixture conexao, em tests/conftest.py) ---
 
 
 def dados_pequenos() -> dict[str, list[dict]]:

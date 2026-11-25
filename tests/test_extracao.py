@@ -6,6 +6,7 @@ da entrada de cada teste, e nunca calculados pela própria função testada.
 """
 
 import json
+from decimal import Decimal
 
 import pytest
 import requests
@@ -22,6 +23,7 @@ from etl.extracao import (
     ler_produtos_csv,
     salvar_bruto,
 )
+from etl.reconciliacao import ErroReconciliacao
 
 URL = "http://api.falsa"
 NAO_JSON = object()  # marcador: o corpo da resposta não é JSON
@@ -348,9 +350,22 @@ BRUTOS_MAIN = {
 }
 
 
+# Reconciliação que confere, para o pedido 10 do BRUTOS_MAIN: itens 2 x 5.00 = 10.00.
+RECONCILIACAO_OK = {
+    "pedidos_origem": 1,
+    "pedidos_destino": 1,
+    "diferenca_pedidos": 0,
+    "soma_valor_itens_origem": Decimal("10.00"),
+    "soma_valor_itens_destino": Decimal("10.00"),
+    "diferenca_soma": Decimal("0.00"),
+    "confere": True,
+}
+
+
 def instalar_etl_falso(monkeypatch: pytest.MonkeyPatch, brutos: dict) -> dict:
-    """Troca a extração (rede e disco) por contadores fixos, a leitura dos brutos pelo dict e a
-    carga (banco) por uma que só guarda o que recebeu: nenhum teste do main grava no banco real."""
+    """Troca a extração (rede e disco) por contadores fixos, a leitura dos brutos pelo dict, e a
+    carga e a reconciliação (banco) por funções que só guardam o que receberam: nenhum teste do
+    main toca o banco real."""
     monkeypatch.setattr(main, "load_dotenv", lambda: None)  # não lê o .env durante o teste
     recebido = {}
 
@@ -359,6 +374,12 @@ def instalar_etl_falso(monkeypatch: pytest.MonkeyPatch, brutos: dict) -> dict:
         return {"clientes": 1, "produtos": 1, "pedidos": 1, "itens_pedido": 1}
 
     monkeypatch.setattr(main, "executar_carga", carga_falsa)
+
+    def reconciliacao_falsa(pedidos_brutos):
+        recebido["pedidos_reconciliados"] = pedidos_brutos
+        return RECONCILIACAO_OK
+
+    monkeypatch.setattr(main, "executar_reconciliacao", reconciliacao_falsa)
 
     def extracao_falsa(url_base):
         recebido["url_base"] = url_base
@@ -399,8 +420,13 @@ def test_main_imprime_contadores_no_formato_da_secao_4(monkeypatch, capsys):
         "transformacao: emails_nulos=1 estados_padronizados=1 datas_convertidas=1 "
         "valores_convertidos=1",
         "carga: clientes=1 produtos=1 pedidos=1 itens=1",
+        "reconciliacao: pedidos_origem=1 pedidos_destino=1 diferenca=0",
+        "reconciliacao: soma_valor_itens_origem=10.00 soma_valor_itens_destino=10.00 "
+        "diferenca=0.00",
         "divergentes: 1 pedidos com valor_total diferente da soma dos itens",
     ]
+    # A origem da reconciliação são os brutos, com o repetido: a A5 não pode ser pulada nela.
+    assert recebido["pedidos_reconciliados"] == BRUTOS_MAIN["pedidos"]
 
 
 def test_main_com_falha_na_carga_sai_com_mensagem_e_codigo_1(monkeypatch, capsys):
@@ -417,6 +443,54 @@ def test_main_com_falha_na_carga_sai_com_mensagem_e_codigo_1(monkeypatch, capsys
     assert "carga:" not in saida.out  # nenhuma contagem é impressa
     assert "divergentes:" not in saida.out
     assert saida.err == "erro: carga: tabela pedidos: violacao de chave estrangeira\n"
+
+
+def test_main_com_reconciliacao_que_nao_confere_sai_com_codigo_1(monkeypatch, capsys):
+    monkeypatch.setenv("API_URL", URL)
+    instalar_etl_falso(monkeypatch, BRUTOS_MAIN)
+    faltou_o_pedido = {
+        **RECONCILIACAO_OK,
+        "pedidos_destino": 0,
+        "diferenca_pedidos": 1,
+        "soma_valor_itens_destino": Decimal("0.00"),
+        "diferenca_soma": Decimal("10.00"),
+        "confere": False,
+    }
+    monkeypatch.setattr(main, "executar_reconciliacao", lambda pedidos_brutos: faltou_o_pedido)
+
+    assert main.main() == 1
+    saida = capsys.readouterr()
+    # Os números são impressos mesmo assim, para mostrar onde está a diferença.
+    assert saida.out.splitlines()[-2:] == [
+        "reconciliacao: pedidos_origem=1 pedidos_destino=0 diferenca=1",
+        "reconciliacao: soma_valor_itens_origem=10.00 soma_valor_itens_destino=0.00 "
+        "diferenca=10.00",
+    ]
+    assert "divergentes:" not in saida.out
+    assert saida.err.startswith("erro: reconciliacao: origem e destino nao conferem")
+
+
+@pytest.mark.parametrize(
+    "erro",
+    [
+        ErroCarga("sem conexao com o PostgreSQL em localhost:5433/verdejar"),
+        ErroReconciliacao('leitura do destino: relation "pedidos" does not exist'),
+    ],
+)
+def test_main_com_falha_na_reconciliacao_sai_com_mensagem_e_codigo_1(monkeypatch, capsys, erro):
+    monkeypatch.setenv("API_URL", URL)
+    instalar_etl_falso(monkeypatch, BRUTOS_MAIN)
+
+    def reconciliacao_que_falha(pedidos_brutos):
+        raise erro
+
+    monkeypatch.setattr(main, "executar_reconciliacao", reconciliacao_que_falha)
+
+    assert main.main() == 1
+    saida = capsys.readouterr()
+    assert "reconciliacao:" not in saida.out
+    assert "divergentes:" not in saida.out
+    assert saida.err == f"erro: reconciliacao: {erro}\n"
 
 
 def test_main_com_registro_invalido_sai_com_mensagem_e_codigo_1(monkeypatch, capsys):
